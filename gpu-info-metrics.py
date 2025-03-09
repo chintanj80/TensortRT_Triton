@@ -1,459 +1,222 @@
-import pynvml
-import time
-import numpy as np
-import matplotlib.pyplot as plt
-import pandas as pd
-import seaborn as sns
-from IPython.display import display, HTML
+# Add this to your imports
+try:
+    import pynvml
+    pynvml_available = True
+except ImportError:
+    pynvml_available = False
+    print("PyNVML not available. Some GPU metrics will be limited.")
 
-# Initialize NVML
-def initialize_nvml():
-    try:
-        pynvml.nvmlInit()
-        return True
-    except Exception as e:
-        print(f"Failed to initialize NVML: {e}")
-        return False
-
-# Get detailed GPU information using NVML
-def get_nvml_gpu_info():
-    if not initialize_nvml():
-        return {}
+# Function to get detailed GPU information using pynvml
+def get_detailed_gpu_info():
+    if not pynvml_available:
+        return get_gpu_info()  # Fall back to the existing function
+        
+    gpu_info = {"GPU Available": False, "Details": {}}
     
     try:
-        info = {}
-        device_count = pynvml.nvmlDeviceGetCount()
-        info["Device Count"] = device_count
+        pynvml.nvmlInit()
+        gpu_info["GPU Available"] = True
         
-        devices = []
+        device_count = pynvml.nvmlDeviceGetCount()
+        gpu_info["Details"]["Device Count"] = device_count
+        
+        # Get info for each GPU
         for i in range(device_count):
-            device = {}
             handle = pynvml.nvmlDeviceGetHandleByIndex(i)
             
             # Basic info
-            device["Index"] = i
-            device["Name"] = pynvml.nvmlDeviceGetName(handle)
-            device["UUID"] = pynvml.nvmlDeviceGetUUID(handle)
+            gpu_info["Details"][f"GPU {i} Name"] = pynvml.nvmlDeviceGetName(handle).decode('utf-8')
             
             # Memory info
             memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            device["Total Memory"] = f"{memory.total / (1024**2):.2f} MB"
-            device["Used Memory"] = f"{memory.used / (1024**2):.2f} MB"
-            device["Free Memory"] = f"{memory.free / (1024**2):.2f} MB"
-            device["Memory Utilization"] = f"{memory.used / memory.total * 100:.2f}%"
+            gpu_info["Details"][f"GPU {i} Memory Total"] = f"{memory.total / 1024**2:.2f} MB"
+            gpu_info["Details"][f"GPU {i} Memory Used"] = f"{memory.used / 1024**2:.2f} MB"
+            gpu_info["Details"][f"GPU {i} Memory Free"] = f"{memory.free / 1024**2:.2f} MB"
             
             # Utilization info
             utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
-            device["GPU Utilization"] = f"{utilization.gpu}%"
-            device["Memory IO Utilization"] = f"{utilization.memory}%"
+            gpu_info["Details"][f"GPU {i} Utilization"] = f"{utilization.gpu}%"
+            gpu_info["Details"][f"GPU {i} Memory Utilization"] = f"{utilization.memory}%"
+            
+            # Power info
+            try:
+                power_usage = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0  # convert to watts
+                power_limit = pynvml.nvmlDeviceGetPowerManagementLimit(handle) / 1000.0
+                gpu_info["Details"][f"GPU {i} Power Usage"] = f"{power_usage:.2f} W"
+                gpu_info["Details"][f"GPU {i} Power Limit"] = f"{power_limit:.2f} W"
+            except pynvml.NVMLError:
+                gpu_info["Details"][f"GPU {i} Power Info"] = "Not available"
             
             # Temperature
-            device["Temperature"] = f"{pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)}°C"
-            
-            # Power
             try:
-                power_usage = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
-                power_limit = pynvml.nvmlDeviceGetPowerManagementLimit(handle) / 1000.0
-                device["Power Usage"] = f"{power_usage:.2f} W"
-                device["Power Limit"] = f"{power_limit:.2f} W"
-                device["Power Utilization"] = f"{power_usage / power_limit * 100:.2f}%"
-            except:
-                device["Power Info"] = "Not available"
+                temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+                gpu_info["Details"][f"GPU {i} Temperature"] = f"{temp}°C"
+            except pynvml.NVMLError:
+                gpu_info["Details"][f"GPU {i} Temperature"] = "Not available"
             
             # Clock speeds
             try:
-                device["Graphics Clock"] = f"{pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_GRAPHICS)} MHz"
-                device["SM Clock"] = f"{pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_SM)} MHz"
-                device["Memory Clock"] = f"{pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM)} MHz"
-            except:
-                device["Clock Info"] = "Not available"
+                graphics_clock = pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_GRAPHICS)
+                memory_clock = pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_MEM)
+                gpu_info["Details"][f"GPU {i} Graphics Clock"] = f"{graphics_clock} MHz"
+                gpu_info["Details"][f"GPU {i} Memory Clock"] = f"{memory_clock} MHz"
+            except pynvml.NVMLError:
+                gpu_info["Details"][f"GPU {i} Clock Speeds"] = "Not available"
             
-            # PCIe info
-            try:
-                pcie_info = pynvml.nvmlDeviceGetPciInfo(handle)
-                device["PCIe Generation"] = f"Gen {pynvml.nvmlDeviceGetMaxPcieLinkGeneration(handle)}"
-                device["PCIe Width"] = f"x{pynvml.nvmlDeviceGetMaxPcieLinkWidth(handle)}"
-                device["PCIe Throughput"] = f"{pynvml.nvmlDeviceGetPcieThroughput(handle, pynvml.NVML_PCIE_UTIL_TX_BYTES) / (1024**2):.2f} MB/s TX"
-            except:
-                device["PCIe Info"] = "Not available"
-            
-            # CUDA compute capability
-            try:
-                cc_major, cc_minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
-                device["CUDA Compute Capability"] = f"{cc_major}.{cc_minor}"
-            except:
-                device["CUDA Compute Capability"] = "Not available"
-            
-            devices.append(device)
-        
-        info["Devices"] = devices
-        
-        # NVML driver info
-        try:
-            info["Driver Version"] = pynvml.nvmlSystemGetDriverVersion()
-            info["NVML Version"] = pynvml.nvmlSystemGetNVMLVersion()
-        except:
-            info["Version Info"] = "Not available"
-        
-        # Finalize NVML
         pynvml.nvmlShutdown()
         
-        return info
-    
-    except Exception as e:
-        print(f"Error getting GPU info with NVML: {e}")
-        try:
-            pynvml.nvmlShutdown()
-        except:
-            pass
-        return {}
+    except pynvml.NVMLError as error:
+        gpu_info["Error"] = str(error)
+        
+    return gpu_info
 
-# Display NVML GPU information
-def display_nvml_gpu_info():
-    gpu_info = get_nvml_gpu_info()
+# Function to monitor GPU metrics during performance tests
+def monitor_gpu_metrics(callback_function, interval=1.0, duration=None):
+    """
+    Monitor GPU metrics during the execution of a function
     
-    if not gpu_info or "Devices" not in gpu_info or not gpu_info["Devices"]:
-        print("❌ No NVIDIA GPU detected or NVML is not available")
-        return
+    Parameters:
+    callback_function: Function to monitor
+    interval: Polling interval in seconds
+    duration: Maximum monitoring duration in seconds (None for unlimited)
     
-    print(f"🎉 Detected {len(gpu_info['Devices'])} GPU(s)")
+    Returns:
+    (result, metrics): Result of the callback function and metrics data
+    """
+    if not pynvml_available:
+        print("PyNVML not available. Cannot monitor GPU metrics.")
+        return callback_function(), None
     
-    for i, device in enumerate(gpu_info["Devices"]):
-        # Create a styled HTML table for each GPU
-        html = f"""
-        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 10px; margin: 10px 0;">
-            <h3 style="color: #2c3e50; margin-top: 0;">NVIDIA GPU {i}: {device.get('Name', 'Unknown')}</h3>
-            <table style="width: 100%; border-collapse: collapse;">
-        """
-        
-        # Skip 'Index' and 'Name' since they're in the header
-        skip_keys = ['Index', 'Name']
-        
-        # Group metrics into categories
-        categories = {
-            "Basic Information": ["UUID", "CUDA Compute Capability"],
-            "Memory": ["Total Memory", "Used Memory", "Free Memory", "Memory Utilization"],
-            "Performance": ["GPU Utilization", "Memory IO Utilization", "Temperature"],
-            "Power": ["Power Usage", "Power Limit", "Power Utilization"],
-            "Clocks": ["Graphics Clock", "SM Clock", "Memory Clock"],
-            "PCIe": ["PCIe Generation", "PCIe Width", "PCIe Throughput"]
-        }
-        
-        # Special handling for when metrics aren't available
-        fallbacks = {
-            "Power": "Power Info",
-            "Clocks": "Clock Info",
-            "PCIe": "PCIe Info"
-        }
-        
-        for category, metrics in categories.items():
-            html += f"""
-            <tr style="background-color: #e9ecef;">
-                <td colspan="2" style="padding: 8px; color: #495057; font-weight: bold;">{category}</td>
-            </tr>
-            """
-            
-            # Check if any metrics in this category are available
-            metrics_available = any(metric in device for metric in metrics)
-            fallback = fallbacks.get(category)
-            
-            if metrics_available:
-                for metric in metrics:
-                    if metric in device:
-                        html += f"""
-                        <tr style="border-bottom: 1px solid #ddd;">
-                            <td style="padding: 8px; color: #34495e; font-weight: bold;">{metric}</td>
-                            <td style="padding: 8px;">{device[metric]}</td>
-                        </tr>
-                        """
-            elif fallback and fallback in device:
-                html += f"""
-                <tr style="border-bottom: 1px solid #ddd;">
-                    <td style="padding: 8px; color: #34495e; font-weight: bold;">Status</td>
-                    <td style="padding: 8px;">{device[fallback]}</td>
-                </tr>
-                """
-            else:
-                html += f"""
-                <tr style="border-bottom: 1px solid #ddd;">
-                    <td style="padding: 8px; color: #34495e; font-weight: bold;">Status</td>
-                    <td style="padding: 8px;">Not available</td>
-                </tr>
-                """
-        
-        html += """
-            </table>
-        </div>
-        """
-        
-        display(HTML(html))
+    import threading
+    import time
     
-    # Driver Information
-    if "Driver Version" in gpu_info:
-        html = f"""
-        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 10px; margin: 10px 0;">
-            <h3 style="color: #2c3e50; margin-top: 0;">NVIDIA Driver Information</h3>
-            <table style="width: 100%; border-collapse: collapse;">
-                <tr style="border-bottom: 1px solid #ddd;">
-                    <td style="padding: 8px; color: #34495e; font-weight: bold;">Driver Version</td>
-                    <td style="padding: 8px;">{gpu_info["Driver Version"]}</td>
-                </tr>
-                <tr style="border-bottom: 1px solid #ddd;">
-                    <td style="padding: 8px; color: #34495e; font-weight: bold;">NVML Version</td>
-                    <td style="padding: 8px;">{gpu_info.get("NVML Version", "Not available")}</td>
-                </tr>
-            </table>
-        </div>
-        """
-        
-        display(HTML(html))
-
-# GPU monitoring class
-class GPUMonitor:
-    def __init__(self, interval=1.0):
-        self.interval = interval
-        self.keep_monitoring = False
-        self.data = {
-            'timestamp': [],
-            'gpu_util': [],
-            'mem_util': [],
-            'temperature': [],
-            'power_usage': []
-        }
-        self.nvml_initialized = False
-        self.handles = []
+    metrics = []
+    stop_monitoring = threading.Event()
     
-    def start(self):
+    def collect_metrics():
         try:
             pynvml.nvmlInit()
-            self.nvml_initialized = True
-            self.device_count = pynvml.nvmlDeviceGetCount()
+            device_count = pynvml.nvmlDeviceGetCount()
             
-            for i in range(self.device_count):
-                self.handles.append(pynvml.nvmlDeviceGetHandleByIndex(i))
+            start_time = time.time()
+            elapsed = 0
             
-            self.keep_monitoring = True
-        except Exception as e:
-            print(f"Failed to initialize GPU monitoring: {e}")
-            return
-    
-    def stop(self):
-        self.keep_monitoring = False
-        if self.nvml_initialized:
-            try:
-                pynvml.nvmlShutdown()
-                self.nvml_initialized = False
-            except:
-                pass
-    
-    def monitor(self, duration=60):
-        """Monitor GPU for specified duration in seconds"""
-        if not self.nvml_initialized:
-            self.start()
-            if not self.nvml_initialized:
-                return pd.DataFrame()
-        
-        start_time = time.time()
-        self.data = {
-            'timestamp': [],
-            'gpu_util': [],
-            'mem_util': [],
-            'temperature': [],
-            'power_usage': []
-        }
-        
-        try:
-            while time.time() - start_time < duration and self.keep_monitoring:
-                current_time = time.time() - start_time
+            while not stop_monitoring.is_set() and (duration is None or elapsed < duration):
+                timestamp = time.time() - start_time
                 
-                # Using first GPU for simplicity, can be extended for multiple GPUs
-                handle = self.handles[0]
+                for i in range(device_count):
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+                    
+                    utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                    memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                    
+                    try:
+                        temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+                    except:
+                        temp = None
+                    
+                    try:
+                        power = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
+                    except:
+                        power = None
+                    
+                    metrics.append({
+                        'time': timestamp,
+                        'gpu_id': i,
+                        'gpu_util': utilization.gpu,
+                        'mem_util': utilization.memory,
+                        'mem_used_mb': memory.used / 1024**2,
+                        'temp_c': temp,
+                        'power_w': power
+                    })
                 
-                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
-                temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+                time.sleep(interval)
+                elapsed = time.time() - start_time
                 
-                try:
-                    power = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0  # Convert to watts
-                except:
-                    power = 0
-                
-                self.data['timestamp'].append(current_time)
-                self.data['gpu_util'].append(util.gpu)
-                self.data['mem_util'].append(util.memory)
-                self.data['temperature'].append(temp)
-                self.data['power_usage'].append(power)
-                
-                time.sleep(self.interval)
+            pynvml.nvmlShutdown()
             
-            return pd.DataFrame(self.data)
-        
-        except Exception as e:
-            print(f"Error during GPU monitoring: {e}")
-            return pd.DataFrame(self.data)
-        
-        finally:
-            self.stop()
+        except pynvml.NVMLError as error:
+            print(f"Error monitoring GPU: {error}")
     
-    def plot_metrics(self, df=None):
-        if df is None:
-            if not self.data['timestamp']:
-                print("No monitoring data available")
-                return
-            df = pd.DataFrame(self.data)
-        
-        if df.empty:
-            print("No monitoring data available")
-            return
-        
-        fig, axes = plt.subplots(4, 1, figsize=(12, 16), sharex=True)
-        
-        # GPU Utilization
-        axes[0].plot(df['timestamp'], df['gpu_util'], 'b-', linewidth=2)
-        axes[0].set_title('GPU Utilization (%)', fontsize=14)
-        axes[0].set_ylabel('Utilization (%)')
-        axes[0].grid(True)
-        axes[0].set_ylim(0, 105)
-        
-        # Memory Utilization
-        axes[1].plot(df['timestamp'], df['mem_util'], 'g-', linewidth=2)
-        axes[1].set_title('Memory Utilization (%)', fontsize=14)
-        axes[1].set_ylabel('Utilization (%)')
-        axes[1].grid(True)
-        axes[1].set_ylim(0, 105)
-        
-        # Temperature
-        axes[2].plot(df['timestamp'], df['temperature'], 'r-', linewidth=2)
-        axes[2].set_title('GPU Temperature (°C)', fontsize=14)
-        axes[2].set_ylabel('Temperature (°C)')
-        axes[2].grid(True)
-        
-        # Power Usage
-        if any(df['power_usage'] > 0):
-            axes[3].plot(df['timestamp'], df['power_usage'], 'purple', linewidth=2)
-            axes[3].set_title('Power Usage (W)', fontsize=14)
-            axes[3].set_ylabel('Power (W)')
-            axes[3].grid(True)
-        else:
-            axes[3].text(0.5, 0.5, 'Power usage data not available', 
-                        horizontalalignment='center', verticalalignment='center',
-                        transform=axes[3].transAxes, fontsize=14)
-        
-        # X-axis label
-        axes[3].set_xlabel('Time (seconds)', fontsize=14)
-        
-        plt.tight_layout()
-        return plt
+    # Start monitoring thread
+    monitor_thread = threading.Thread(target=collect_metrics)
+    monitor_thread.daemon = True
+    monitor_thread.start()
+    
+    # Run the callback function
+    try:
+        result = callback_function()
+    finally:
+        # Stop monitoring
+        stop_monitoring.set()
+        monitor_thread.join()
+    
+    return result, pd.DataFrame(metrics) if metrics else None
 
-# Modified run_all_tests to include NVML info
-def run_all_tests():
-    # Display PyTorch GPU info
-    display_gpu_info()
+# Function to plot GPU metrics over time
+def plot_gpu_metrics(metrics_df):
+    if metrics_df is None or metrics_df.empty:
+        print("No GPU metrics available to plot.")
+        return
     
-    # Display NVML detailed GPU info
-    display_nvml_gpu_info()
+    # Check if we have multiple GPUs
+    gpu_ids = metrics_df['gpu_id'].unique()
     
-    print("\n" + "="*50)
-    print("NVIDIA GPU Performance Tests")
-    print("="*50 + "\n")
+    fig, axs = plt.subplots(3, 1, figsize=(12, 12), sharex=True)
     
-    # Create GPU Monitor
-    gpu_monitor = GPUMonitor(interval=0.5)
+    # Plot GPU Utilization
+    for gpu_id in gpu_ids:
+        gpu_data = metrics_df[metrics_df['gpu_id'] == gpu_id]
+        axs[0].plot(gpu_data['time'], gpu_data['gpu_util'], label=f'GPU {gpu_id}')
     
-    # Matrix multiplication test with monitoring
-    print("Starting GPU monitoring for matrix multiplication test...")
-    gpu_monitor.start()
-    matmul_results = test_matrix_multiplication(sizes=[1000, 2000, 4000], repeat=3)
-    matmul_monitor_data = gpu_monitor.monitor(duration=30)  # Monitor for 30 seconds
+    axs[0].set_ylabel('GPU Utilization (%)')
+    axs[0].set_title('GPU Utilization Over Time')
+    axs[0].grid(True)
+    axs[0].legend()
     
-    if not matmul_results.empty:
-        print("\n📊 Matrix Multiplication Results:")
-        display(matmul_results)
+    # Plot Memory Utilization
+    for gpu_id in gpu_ids:
+        gpu_data = metrics_df[metrics_df['gpu_id'] == gpu_id]
+        axs[1].plot(gpu_data['time'], gpu_data['mem_used_mb'], label=f'GPU {gpu_id}')
+    
+    axs[1].set_ylabel('Memory Used (MB)')
+    axs[1].set_title('GPU Memory Usage Over Time')
+    axs[1].grid(True)
+    axs[1].legend()
+    
+    # Plot Temperature (if available)
+    temp_available = 'temp_c' in metrics_df.columns and not metrics_df['temp_c'].isnull().all()
+    power_available = 'power_w' in metrics_df.columns and not metrics_df['power_w'].isnull().all()
+    
+    if temp_available:
+        ax2 = axs[2]
         
-        plot = plot_results(matmul_results, 
-                           "Matrix Multiplication Performance Comparison", 
-                           "Matrix Size", 
-                           y_col="Time",
-                           hue_col="Device")
-        plot.show()
+        for gpu_id in gpu_ids:
+            gpu_data = metrics_df[metrics_df['gpu_id'] == gpu_id]
+            ax2.plot(gpu_data['time'], gpu_data['temp_c'], label=f'GPU {gpu_id} Temp')
         
-        # Plot monitoring data if available
-        if not matmul_monitor_data.empty:
-            print("\n📈 GPU Metrics During Matrix Multiplication:")
-            monitor_plot = gpu_monitor.plot_metrics(matmul_monitor_data)
-            monitor_plot.show()
+        ax2.set_ylabel('Temperature (°C)')
+        ax2.set_title('GPU Temperature Over Time')
+        
+        if power_available:
+            ax3 = ax2.twinx()
+            for gpu_id in gpu_ids:
+                gpu_data = metrics_df[metrics_df['gpu_id'] == gpu_id]
+                ax3.plot(gpu_data['time'], gpu_data['power_w'], '--', label=f'GPU {gpu_id} Power')
+            ax3.set_ylabel('Power (Watts)', color='tab:red')
+            ax3.tick_params(axis='y', colors='tab:red')
     
-    # Rest of the tests with monitoring...
-    # (similarly add monitoring to FFT and neural network tests)
+    elif power_available:
+        for gpu_id in gpu_ids:
+            gpu_data = metrics_df[metrics_df['gpu_id'] == gpu_id]
+            axs[2].plot(gpu_data['time'], gpu_data['power_w'], label=f'GPU {gpu_id}')
+        
+        axs[2].set_ylabel('Power (Watts)')
+        axs[2].set_title('GPU Power Usage Over Time')
     
-    # FFT test
-    print("Starting GPU monitoring for FFT test...")
-    gpu_monitor.start()
-    fft_results = test_fft(sizes=[2**20, 2**22, 2**24], repeat=3)
-    fft_monitor_data = gpu_monitor.monitor(duration=30)
+    axs[2].grid(True)
+    axs[2].legend()
+    axs[2].set_xlabel('Time (seconds)')
     
-    if not fft_results.empty:
-        print("\n📊 FFT Results:")
-        display(fft_results)
-        
-        plot = plot_results(fft_results, 
-                           "FFT Performance Comparison", 
-                           "FFT Size", 
-                           y_col="Time",
-                           hue_col="Device")
-        plot.show()
-        
-        # Plot monitoring data if available
-        if not fft_monitor_data.empty:
-            print("\n📈 GPU Metrics During FFT:")
-            monitor_plot = gpu_monitor.plot_metrics(fft_monitor_data)
-            monitor_plot.show()
-    
-    # Neural network test
-    print("Starting GPU monitoring for neural network test...")
-    gpu_monitor.start()
-    nn_results = test_neural_net_ops(batch_sizes=[64, 128, 256], repeat=3)
-    nn_monitor_data = gpu_monitor.monitor(duration=60)
-    
-    if not nn_results.empty:
-        print("\n📊 Neural Network Operation Results:")
-        display(nn_results)
-        
-        # Plot forward pass results
-        forward_results = nn_results[nn_results["Operation"] == "Forward Pass"]
-        plot = plot_results(forward_results, 
-                           "Neural Network Forward Pass Performance", 
-                           "Batch Size", 
-                           y_col="Time",
-                           hue_col="Device")
-        plot.show()
-        
-        # Plot backward pass results
-        backward_results = nn_results[nn_results["Operation"] == "Backward Pass"]
-        plot = plot_results(backward_results, 
-                           "Neural Network Backward Pass Performance", 
-                           "Batch Size", 
-                           y_col="Time",
-                           hue_col="Device")
-        plot.show()
-        
-        # Plot monitoring data if available
-        if not nn_monitor_data.empty:
-            print("\n📈 GPU Metrics During Neural Network Operations:")
-            monitor_plot = gpu_monitor.plot_metrics(nn_monitor_data)
-            monitor_plot.show()
-    
-    # Calculate and display overall speedup
-    if torch_available and torch.cuda.is_available():
-        print("\n🚀 Overall Performance Summary:")
-        
-        # Matrix multiplication speedup
-        if not matmul_results.empty:
-            gpu_times = matmul_results[matmul_results["Device"] == "GPU (PyTorch)"]["Time"].values
-            cpu_times = matmul_results[matmul_results["Device"] == "CPU (NumPy)"]["Time"].values
-            
-            if len(gpu_times) > 0 and len(cpu_times) > 0:
-                avg_speedup = np.mean(cpu_times / gpu_times)
-                print(f"Average Matrix Multiplication Speedup: {avg_speedup:.2f}x")
-        
-        # Neural network speedup calculation as in the original code
-        # ...
+    plt.tight_layout()
+    return fig
